@@ -15,8 +15,8 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <stdbool.h>
 
-#include "NR_MAC_gNB/nr_mac_gNB.h"
 
 typedef struct sockaddr_in sockaddr_in;
 
@@ -28,15 +28,14 @@ const char* get_enum_name(RANParameter ran_par_enum);
 void ran_write(RANParamMapEntry* target_param_map_entry);
 char* int_to_charray(int i);
 void handle_master_message(void* buf, int buflen, int out_socket, struct sockaddr_in servaddr);
-UeListM* get_ue_list();
+UeListM* build_ue_list_message();
 void ran_read(RANParameter ran_par_enum, RANParamMapEntry* map_entry);
-float_t get_nr_RSRP(module_id_t Mod_id,uint8_t CC_id,uint8_t gNB_index);
 
 // functions to free memory
 void free_ran_param_map(RANParamMapEntry **map);
 void free_ue_list(UeListM* ue_list_m);
 
 // specific ran write functions
-void set_gbr_ue(rnti_t rnti, float tbs_dl, float tbs_ul, bool is_GBR);
-void apply_ue_info(UeListM* ue_list);
-void apply_max_cell_prb(int max_prb);
+void set_ue_properties(int rnti, bool prop_1, float prop_2);
+void apply_properties_to_ue_list(UeListM* ue_list);
+void initialize_ues_if_needed();

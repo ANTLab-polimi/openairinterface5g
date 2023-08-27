@@ -1,32 +1,51 @@
 //
-// Created by root on 10/28/22.
+// Created by Eugenio Moro on 04/24/23.
 //
 
 #include "e2_message_handlers.h"
-#include "common/ran_context.h"
-
-#include "PHY/defs_nr_UE.h"
-#include "PHY/phy_extern_nr_ue.h"
-#include "e2_agent_app.h"
-
-extern RAN_CONTEXT_t RC;
-extern PHY_VARS_NR_UE ***PHY_vars_UE_g;
+#include <stdbool.h>
+#define CONNECTED_UES 4
 
 int gnb_id = 0;
-int something = 0;
+bool is_initialized = false;
+typedef struct {
+    int rnti;
+    bool prop_1;
+    float prop_2;
+} ue_struct;
+ue_struct connected_ue_list[CONNECTED_UES];
 
+/*
+ * initialize the ues
+ */
+void initialize_ues_if_needed(){
+    if(is_initialized)
+        return;
+    for (int ue=0;ue<CONNECTED_UES;ue++){
+        connected_ue_list[ue].rnti = rand();
+        connected_ue_list[ue].prop_1 = false;
+        connected_ue_list[ue].prop_2 = -1;
+    }
+    is_initialized = true;
+}
+
+/*
+this function has not been implemented and it won't be needed in the foreseeable future
+*/
 void handle_subscription(RANMessage* in_mess){
-    LOG_E(E2_AGENT,"Not implemented\n");
-    assert(0!=0);
+    printf("Not implemented\n");
     ran_message__free_unpacked(in_mess,NULL);
+    initialize_ues_if_needed();
+    assert(0!=0);
 }
 /*
 this function just basically prints out the parameters in the request and passes the in_mess to the response generator
 */
 void handle_indication_request(RANMessage* in_mess,int out_socket, sockaddr_in peeraddr){
-    LOG_D(E2_AGENT,"Indication request for %lu parameters:\n", in_mess->ran_indication_request->n_target_params);
+    initialize_ues_if_needed();
+    printf("Indication request for %lu parameters:\n", in_mess->ran_indication_request->n_target_params);
     for(int par_i=0; par_i<in_mess->ran_indication_request->n_target_params; par_i++){
-        LOG_D(E2_AGENT,"\tParameter id %d requested (a.k.a %s)\n",\
+        printf("\tParameter id %d requested (a.k.a %s)\n",\
         in_mess->ran_indication_request->target_params[par_i],\
         get_enum_name(in_mess->ran_indication_request->target_params[par_i]));
     }
@@ -68,12 +87,12 @@ void build_indication_response(RANMessage* in_mess, int out_socket, sockaddr_in 
     buflen = ran_indication_response__get_packed_size(&rsp);
     buf = malloc(buflen);
     ran_indication_response__pack(&rsp,buf);
-    LOG_D(E2_AGENT,"Sending indication response\n");
+    printf("Sending indication response\n");
     unsigned slen = sizeof(servaddr);
     int rev = sendto(out_socket, (const char *)buf, buflen,
                      MSG_CONFIRM, (const struct sockaddr *) &servaddr,
                      slen);
-    LOG_D(E2_AGENT,"Sent %d bytes, buflen was %u\n",rev, buflen);
+    printf("Sent %d bytes, buflen was %u\n",rev, buflen);
 
     // free map and buffer (rsp not freed because in the stack)
     free_ran_param_map(map);
@@ -113,11 +132,12 @@ void free_ran_param_map(RANParamMapEntry **map){
 }
 
 void handle_control(RANMessage* in_mess){
-    // loop target params and apply
-    LOG_D(E2_AGENT,"handle_control called\n");
+    initialize_ues_if_needed();
+    // loop tarhet params and apply
     for(int i=0; i<in_mess->ran_control_request->n_target_param_map; i++){
-        LOG_D(E2_AGENT,"Applying target parameter %s\n",\
-        get_enum_name(in_mess->ran_control_request->target_param_map[i]->key));
+        printf("Applying target parameter %s with value %s\n",\
+        get_enum_name(in_mess->ran_control_request->target_param_map[i]->key),\
+        in_mess->ran_control_request->target_param_map[i]->string_value);
         ran_write(in_mess->ran_control_request->target_param_map[i]);
     }
     // free incoming ran message
@@ -129,104 +149,57 @@ const char* get_enum_name(RANParameter ran_par_enum){
     {
         case RAN_PARAMETER__GNB_ID:
             return "gnb_id";
-        case RAN_PARAMETER__SOMETHING:
-            return "something";
         case RAN_PARAMETER__UE_LIST:
             return "ue_list";
-        case RAN_PARAMETER__MAX_PRB:
-            return "max_prb";
         default:
             return "unrecognized param";
     }
 }
 
 void ran_write(RANParamMapEntry* target_param_map_entry){
-    LOG_D(E2_AGENT,"ran_write called\n");
     switch (target_param_map_entry->key)
     {
         case RAN_PARAMETER__GNB_ID:
             gnb_id = atoi(target_param_map_entry->string_value);
             break;
-        case RAN_PARAMETER__SOMETHING:
-            something = atoi(target_param_map_entry->string_value);
-            break;
         case RAN_PARAMETER__UE_LIST: // if we receive a ue list message we need to apply its content
-            apply_ue_info(target_param_map_entry->ue_list);
-            break;
-        case RAN_PARAMETER__MAX_PRB:
-            apply_max_cell_prb(target_param_map_entry->int64_value);
-            break;
-        case RAN_PARAMETER__USE_TRUE_GBR:
-            apply_true_gbr(target_param_map_entry->int64_value);
+            apply_properties_to_ue_list(target_param_map_entry->ue_list);
             break;
         default:
-            LOG_E(E2_AGENT,"ERROR: cannot write RAN, unrecognized target param %d\n", target_param_map_entry->key);
+            printf("ERROR: cannot write RAN, unrecognized target param %d\n", target_param_map_entry->key);
     }
 }
 
-void apply_max_cell_prb(int max_prb){
-    pthread_mutex_lock(&e2_agent_db->mutex);
-    LOG_D(E2_AGENT,"apply_max_cell_prb called, setting to %d\n",max_prb);
-    // note that this probably I'll need to protect it with a mutex
-    e2_agent_db->max_prb = max_prb;
-    pthread_mutex_unlock(&e2_agent_db->mutex);
-}
-
-void apply_true_gbr(int true_gbr){
-    pthread_mutex_lock(&e2_agent_db->mutex);
-    LOG_D(E2_AGENT,"apply_true_gbr called, setting to %d\n",true_gbr);
-    // note that this probably I'll need to protect it with a mutex
-    e2_agent_db->true_gbr = true_gbr;
-    pthread_mutex_unlock(&e2_agent_db->mutex);
-}
-
-void apply_ue_info(UeListM* ue_list){
-    LOG_D(E2_AGENT,"in apply_ue_info, ue list size %d\n", ue_list->n_ue_info);
-    // loop the ues and apply what needed to each
+void apply_properties_to_ue_list(UeListM* ue_list){
+    // loop the ues and apply what needed to each, according to what is inside the list received from the xapp
     for(int ue=0; ue<ue_list->n_ue_info; ue++){
-        LOG_D(E2_AGENT,"in apply_ue_info loop ue %d\n",ue);
-        // apply gbr
-        set_gbr_ue(ue_list->ue_info[ue]->rnti,
-            ue_list->ue_info[ue]->tbs_dl_toapply,
-            ue_list->ue_info[ue]->tbs_ul_toapply,
-            ue_list->ue_info[ue]->is_gbr);
+        // apply generic properties (example)
+        set_ue_properties(ue_list->ue_info[ue]->rnti,
+                          ue_list->ue_info[ue]->prop_1,
+                          ue_list->ue_info[ue]->prop_2);
 
         // more stuff later when needed     
     }
 }
 
-void set_gbr_ue(rnti_t rnti, float tbs_dl, float tbs_ul, bool is_GBR){
-    LOG_D(E2_AGENT,"in set_gbr_ue\n");
-    // acquire mac layer mutex 
-    NR_UEs_t *UE_info_gnb = &RC.nrmac[0]->UE_info;
-    pthread_mutex_lock(&UE_info_gnb->mutex);
+void set_ue_properties(int rnti, bool prop_1, float prop_2){
 
     // iterate ue list until rnti is found
-    NR_UE_info_t **UE_list = UE_info_gnb->list;
     bool rnti_not_found = true;
-    UE_iterator(UE_list, UE) {
-        LOG_D(E2_AGENT,"in set_gbr_ue ue iterator\n");
-        if(UE->rnti == rnti){
-            LOG_D(E2_AGENT,"in set_gbr_ue rnti found\n");
-            // set gbr
-            UE->is_GBR = is_GBR;
-
-            // if this ue is gbr, then set tbs size too
-            UE->guaranteed_tbs_bytes_dl = tbs_dl;
-            UE->guaranteed_tbs_bytes_ul = tbs_ul;
+    for(int ue=0; ue<CONNECTED_UES; ue++) {
+        if(connected_ue_list[ue].rnti == rnti){
+            printf("RNTI found\n");
+            connected_ue_list[ue].prop_1 = prop_1;
+            connected_ue_list[ue].prop_2 = prop_2;
             rnti_not_found = false;
             break;
-            
         } else {
             continue;
         }
     }
     if(rnti_not_found){
-        LOG_E(E2_AGENT, "RNTI %u not found\n", rnti);
+        printf("RNTI %u not found\n", rnti);
     }
-
-    // release mutex
-    pthread_mutex_unlock(&UE_info_gnb->mutex);
 }
 
 char* int_to_charray(int i){
@@ -237,103 +210,90 @@ char* int_to_charray(int i){
 }
 
 void handle_master_message(void* buf, int buflen, int out_socket, struct sockaddr_in servaddr){
+    initialize_ues_if_needed();
     RANMessage* in_mess = ran_message__unpack(NULL, (size_t)buflen, buf);
     if (!in_mess){
-        LOG_E(E2_AGENT,"error decoding received message, printing for debug:\n");
+        printf("Error decoding received message, printing for debug:\n");
         for(int i=0;i<buflen; i++){
             uint8_t* tempbuf = (uint8_t*) buf;
-            LOG_E(E2_AGENT," %hhx ", tempbuf[i]);
+            printf(" %hhx ", tempbuf[i]);
         }
-        LOG_E(E2_AGENT,"\n");
+        printf("\n");
         return;
     }
-    LOG_D(E2_AGENT,"ran message id %d\n", in_mess->msg_type);
+    printf("ran message id %d\n", in_mess->msg_type);
     switch(in_mess->msg_type){
         case RAN_MESSAGE_TYPE__SUBSCRIPTION:
-            LOG_D(E2_AGENT,"Subcription message received\n");
+            printf("Subcription message received\n");
             handle_subscription(in_mess);
             break;
         case RAN_MESSAGE_TYPE__INDICATION_REQUEST:
-            LOG_D(E2_AGENT,"Indication request message received\n");
+            printf("Indication request message received\n");
             handle_indication_request(in_mess, out_socket, servaddr);
             break;
         case RAN_MESSAGE_TYPE__INDICATION_RESPONSE:
-            LOG_D(E2_AGENT,"Indication response message received\n");
+            printf("Indication response message received\n");
             build_indication_response(in_mess, out_socket, servaddr);
             break;
         case RAN_MESSAGE_TYPE__CONTROL:
-            LOG_D(E2_AGENT,"Control message received\n");
+            printf("Control message received\n");
             handle_control(in_mess);
             break;
         default:
-            LOG_D(E2_AGENT,"Unrecognized message type\n");
+            printf("Unrecognized message type\n");
             ran_message__free_unpacked(in_mess,NULL);
             break;
     }
 }
 
 
-UeListM* get_ue_list(){
-    // init ue list
+UeListM* build_ue_list_message(){
+    // init ue list protobuf message
     UeListM* ue_list_m = malloc(sizeof(UeListM));
     ue_list_m__init(ue_list_m);
 
-    NR_UEs_t *UE_info_gnb = &RC.nrmac[0]->UE_info;
-
-    // count how many ues are connected
-    int num_ues;
-    for(num_ues = 0; num_ues < MAX_MOBILES_PER_GNB; num_ues++){
-        if(UE_info_gnb->list[num_ues] == NULL){
-            break;
-        }
-    }
-
     // insert n ues
-    ue_list_m->connected_ues = num_ues;
-    ue_list_m->n_ue_info = num_ues;
-    if(num_ues == 0){
+    ue_list_m->connected_ues = CONNECTED_UES;
+    ue_list_m->n_ue_info = CONNECTED_UES;
+
+    // if no ues are connected then we can stop and just return the message
+    if(CONNECTED_UES == 0){
         return ue_list_m;
     }
-    NR_UE_info_t* curr_ue;
-    // build list of ue_info_m
+    // build list of ue_info_m (this is also a protobuf message)
     UeInfoM** ue_info_list;
-    ue_info_list = malloc(sizeof(UeInfoM*)*(num_ues+1)); // allocating space for 1 additional element which will ne NULL (terminator element)
-    for(int i = 0; i<num_ues; i++){
+    ue_info_list = malloc(sizeof(UeInfoM*)*(CONNECTED_UES+1)); // allocating space for 1 additional element which will be NULL (terminator element)
+    for(int i = 0; i<CONNECTED_UES; i++){
         // init list
         ue_info_list[i] = malloc(sizeof(UeInfoM));
         ue_info_m__init(ue_info_list[i]);
-        curr_ue = UE_info_gnb->list[i];
 
-        // add rnti
-        ue_info_list[i]->rnti = curr_ue->rnti;
-        
-        // add grb info
-        ue_info_list[i]->has_is_gbr = 1;
-        ue_info_list[i]->is_gbr = curr_ue->is_GBR;
+        // read rnti and add to message
+        ue_info_list[i]->rnti = connected_ue_list[i].rnti;
 
-        // add tbs info
-        ue_info_list[i]->has_tbs_avg_dl = 1;
-        ue_info_list[i]->tbs_avg_dl = curr_ue->avg_tbs_1s_dl;
-        ue_info_list[i]->has_tbs_avg_ul = 1;
-        ue_info_list[i]->tbs_avg_ul = curr_ue->avg_tbs_1s_ul;
-        
-        NR_UE_sched_ctrl_t *sched_ctrl = &(curr_ue->UE_sched_ctrl);
-        ue_info_list[i]->has_dl_mac_buffer_occupation=1;
-        ue_info_list[i]->dl_mac_buffer_occupation = sched_ctrl->num_total_bytes;
+        // read mesures and add to message (actually just send random data)
 
-        ue_info_list[i]->has_avg_prbs_dl = 1;
-        ue_info_list[i]->avg_prbs_dl = curr_ue->avg_prbs_dl;
+        // measures
+        ue_info_list[i]->has_meas_type_1 = 1;
+        ue_info_list[i]->meas_type_1 = rand();
+        ue_info_list[i]->has_meas_type_2 = 1;
+        ue_info_list[i]->meas_type_2 = rand();
+        ue_info_list[i]->has_meas_type_3 = 1;
+        ue_info_list[i]->meas_type_3 = rand();
 
-        ue_info_list[i]->has_mcs = 1;
-        ue_info_list[i]->mcs = curr_ue->UE_sched_ctrl.sched_pdsch.mcs;
+        // properties
+        ue_info_list[i]->has_prop_1 = 1;
+        ue_info_list[i]->prop_1 = connected_ue_list[i].prop_1;
+        if(connected_ue_list[i].prop_2 > -1){
+            ue_info_list[i]->has_prop_2 = 1;
+            ue_info_list[i]->prop_2 = connected_ue_list[i].prop_2;
+        }
 
-        ue_info_list[i]->has_avg_tbs_per_prb_dl = 1;
-        ue_info_list[i]->avg_tbs_per_prb_dl = curr_ue->avg_tbs_per_prb_dl;
 
     }
     // add a null terminator to the list
-    ue_info_list[num_ues] = NULL;
-    // assgin ue info pointer
+    ue_info_list[CONNECTED_UES] = NULL;
+    // assgin ue info pointer to actually fill the field
     ue_list_m->ue_info = ue_info_list;
     return ue_list_m;
 }
@@ -361,43 +321,12 @@ void ran_read(RANParameter ran_par_enum, RANParamMapEntry* map_entry){
             map_entry->value_case=RAN_PARAM_MAP_ENTRY__VALUE_STRING_VALUE;
             map_entry->string_value = int_to_charray(gnb_id);
             break;
-        case RAN_PARAMETER__SOMETHING:
-            map_entry->value_case=RAN_PARAM_MAP_ENTRY__VALUE_STRING_VALUE;
-            map_entry->string_value = int_to_charray(something);
-            break;
         case RAN_PARAMETER__UE_LIST:
             map_entry->value_case=RAN_PARAM_MAP_ENTRY__VALUE_UE_LIST;
-            map_entry->ue_list = get_ue_list();
+            map_entry->ue_list = build_ue_list_message();
             break;
         default:
-            LOG_D(E2_AGENT,"unrecognized param %d\n",ran_par_enum);
+            printf("Unrecognized param %d\n",ran_par_enum);
             assert(0!=0);
     }
-}
-
-uint32_t get_nr_rx_total_gain_dB (module_id_t Mod_id,uint8_t CC_id)
-{
-
-    PHY_VARS_NR_UE *ue = PHY_vars_UE_g[Mod_id][CC_id];
-
-    if (ue)
-        return ue->rx_total_gain_dB;
-
-    return 0xFFFFFFFF;
-}
-
-float_t get_nr_RSRP(module_id_t Mod_id,uint8_t CC_id,uint8_t gNB_index)
-{
-
-    AssertFatal(PHY_vars_UE_g!=NULL,"PHY_vars_UE_g is null\n");
-    AssertFatal(PHY_vars_UE_g[Mod_id]!=NULL,"PHY_vars_UE_g[%d] is null\n",Mod_id);
-    AssertFatal(PHY_vars_UE_g[Mod_id][CC_id]!=NULL,"PHY_vars_UE_g[%d][%d] is null\n",Mod_id,CC_id);
-
-    PHY_VARS_NR_UE *ue = PHY_vars_UE_g[Mod_id][CC_id];
-
-    if (ue)
-        return (10*log10(ue->measurements.rsrp[gNB_index])-
-                get_nr_rx_total_gain_dB(Mod_id,0) -
-                10*log10(20*12));
-    return -140.0;
 }
